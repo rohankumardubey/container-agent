@@ -40,9 +40,10 @@ import time
 import yaml
 
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from glob import glob
+from hashlib import sha1
 from logging import WARNING, DEBUG
 from logging.handlers import SysLogHandler, SYSLOG_UDP_PORT
-from hashlib import sha1
 
 from docker_client import CliDockerClient
 
@@ -405,31 +406,27 @@ def RunContainers(containers, namespace):
         RunContainer(docker, name, ctr)
 
 
-def CheckVersion(config):
-    if 'version' not in config:
-        raise ConfigException('config has no version field')
-    if config['version'] not in SUPPORTED_CONFIG_VERSIONS:
-        raise ConfigException("config version '%s' is not supported"
-                              % config['version'])
-
-
-def RunContainersFromConfigFile(config_file, reload_interval, namespace):
+def RunContainersFromConfigFiles(config_glob, reload_interval, namespace):
     while True:
         try:
-            log.debug('loading config file: %s', config_file)
-            with open(config_file) as f:
-                config = yaml.load(f)
-            CheckVersion(config)
-            all_volumes = LoadVolumes(config.get('volumes', []))
-            user_containers = LoadUserContainers(config.get('containers', []),
-                                                 all_volumes)
+            files = glob(config_glob)
+            log.debug('loading config files: %s', files)
+            containers = []
+            volumes = {}
+            for filename in files:
+                with open(filename) as f:
+                    file_config = yaml.load(f)
+                containers.extend(file_config.get('containers', []))
+                volumes.update(file_config.get('volumes', {}))
+            all_volumes = LoadVolumes(volumes)
+            user_containers = LoadUserContainers(containers, all_volumes)
             CheckGroupWideConflicts(user_containers)
             RunContainers(user_containers, namespace)
         except Exception:
-            log.exception()
-        finally:
-            log.debug('sleeping %d seconds', reload_interval)
-            time.sleep(float(reload_interval))
+            log.exception("exception")
+
+        log.debug('sleeping %d seconds', reload_interval)
+        time.sleep(float(reload_interval))
 
 
 def main():
@@ -462,7 +459,7 @@ def main():
     logging.basicConfig(level=logging.DEBUG, format=format,
                         datefmt='%Y-%m-%d %H:%M:%S')
 
-    RunContainersFromConfigFile(args.containers, args.reload, args.namespace)
+    RunContainersFromConfigFiles(args.containers, args.reload, args.namespace)
 
 if __name__ == '__main__':
     main()

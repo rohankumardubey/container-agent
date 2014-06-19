@@ -1,4 +1,3 @@
-version: v1beta1
 containers:
   - name: trusty-echo
     image: ubuntu:14.04

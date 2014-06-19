@@ -1,5 +1,4 @@
 {
-  "version": "v1beta1",
   "volumes": [
     {"name": "vol1"},
     { "name": "vol2"}

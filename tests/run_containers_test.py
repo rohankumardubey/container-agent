@@ -10,26 +10,6 @@ from container_agent.run_containers import ConfigException
 
 class RunContainersTest(unittest.TestCase):
 
-    def testKnownVersion(self):
-        yaml_code = """
-      version: v1beta1
-      """
-        run_containers.CheckVersion(yaml.load(yaml_code))
-
-    def testNoVersion(self):
-        yaml_code = """
-      not_version: not valid
-      """
-        with self.assertRaises(ConfigException):
-            run_containers.CheckVersion(yaml.load(yaml_code))
-
-    def testUnknownVersion(self):
-        yaml_code = """
-      version: not valid
-      """
-        with self.assertRaises(ConfigException):
-            run_containers.CheckVersion(yaml.load(yaml_code))
-
     def testRfc1035Name(self):
         self.assertFalse(run_containers.IsRfc1035Name('1'))
         self.assertFalse(run_containers.IsRfc1035Name('123'))
