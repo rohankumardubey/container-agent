@@ -22,8 +22,7 @@ from subprocess import Popen, PIPE
 log = logging.getLogger(__name__)
 
 
-DEFAULT_DOCKER_ENDPOINT = environ.get('DOCKER_HOST',
-                                      'unix:///var/run/docker.sock')
+DOCKER_HOST = environ.get('DOCKER_HOST', 'unix:///var/run/docker.sock')
 
 try:
     p = Popen('which docker', stdout=PIPE, stderr=PIPE, shell=True)
@@ -62,8 +61,8 @@ class CliDockerClientError(DockerClientError):
 class CliDockerClient(object):
     def __init__(self, docker=None, endpoint=None):
         super(CliDockerClient, self).__init__()
-        self.docker = docker or DEFAULT_DOCKER_CLI
-        self.endpoint = endpoint or DEFAULT_DOCKER_ENDPOINT
+        self.docker = docker if docker is not None else DEFAULT_DOCKER_CLI
+        self.endpoint = endpoint if endpoint is not None else DOCKER_HOST
 
     def cli(self, *args):
         command = (self.docker, '-H=%s' % self.endpoint) + tuple(args)
