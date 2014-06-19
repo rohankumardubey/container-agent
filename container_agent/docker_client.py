@@ -22,7 +22,8 @@ from subprocess import Popen, PIPE
 log = logging.getLogger(__name__)
 
 
-DEFAULT_DOCKER_ENDPOINT = environ.get('DOCKER_HOST', 'unix:///var/run/docker.sock')
+DEFAULT_DOCKER_ENDPOINT = environ.get('DOCKER_HOST',
+                                      'unix:///var/run/docker.sock')
 
 try:
     p = Popen('which docker', stdout=PIPE, stderr=PIPE, shell=True)
@@ -54,7 +55,8 @@ class CliDockerClientError(DockerClientError):
         self.err = err
 
     def __str__(self):
-        return 'docker command failed: %s (%d) out=(%s) err=(%s)' % (self.command, self.code, self.out, self.err)
+        return 'docker command failed: %s (%d) out=(%s) err=(%s)' % \
+               (self.command, self.code, self.out, self.err)
 
 
 class CliDockerClient(object):
@@ -66,7 +68,8 @@ class CliDockerClient(object):
     def cli(self, *args):
         command = (self.docker, '-H=%s' % self.endpoint) + tuple(args)
         log.debug('cli: %s', command)
-        log.debug('cli: shell style: %s', ' '.join(escape(word) for word in command))
+        log.debug('cli: shell style: %s', ' '.join(escape(word)
+                  for word in command))
         p = Popen(command, stdout=PIPE, stderr=PIPE)
         out, err = p.communicate()
         log.debug('%d %s %s', p.returncode, out, err)
@@ -83,7 +86,13 @@ class CliDockerClient(object):
         code, out, err = self.cli('inspect', container_id)
         return loads(out)
 
-    def run(self, image=None, command=None, ports=None, name=None, volumes=None, env=None):
+    def run(self,
+            image=None,
+            command=None,
+            ports=None,
+            name=None,
+            volumes=None,
+            env=None):
         log.debug('run_daemon %s', image)
         assert image
         ports = ports or []
@@ -122,8 +131,10 @@ class CliDockerClient(object):
             return self.cli_check('ps', '-q').splitlines()
         else:
             lines = self.cli_check('ps').splitlines()[1:]
-            matches = [word for line in lines for word in line.split() if needle in word]
-            log.debug('list_containers: needle=%s, matches=%s', needle, matches)
+            matches = [word for line in lines
+                       for word in line.split() if needle in word]
+            log.debug('list_containers: needle=%s, matches=%s',
+                      needle, matches)
             return matches
 
     def __port_arg(self, internal, external, proto):

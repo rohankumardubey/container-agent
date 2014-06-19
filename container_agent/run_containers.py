@@ -41,7 +41,7 @@ import yaml
 
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from logging import WARNING, DEBUG
-from logging.handlers import SysLogHandler
+from logging.handlers import SysLogHandler, SYSLOG_UDP_PORT
 from hashlib import sha1
 
 from docker_client import CliDockerClient
@@ -61,6 +61,10 @@ MAX_PATH_LEN = 512
 
 DOCKER_CMD = 'docker'
 VOLUMES_ROOT_DIR = '/export'
+
+
+class ConfigException(Exception):
+    pass
 
 
 def IsValidProtocol(proto):
@@ -97,12 +101,14 @@ def LoadVolumes(volumes):
     for vol_index, vol in enumerate(volumes):
         # Get the container name.
         if 'name' not in vol:
-            raise Exception('volumes[%d] has no name' % (vol_index))
+            raise ConfigException('volumes[%d] has no name' % (vol_index))
         vol_name = vol['name']
         if not IsRfc1035Name(vol_name):
-            raise Exception('volumes[%d].name is invalid: %s' % (vol_index, vol_name))
+            raise ConfigException('volumes[%d].name is invalid: %s'
+                                  % (vol_index, vol_name))
         if vol_name in all_vol_names:
-            raise Exception('volumes[%d].name is not unique: %s' % (vol_index, vol_name))
+            raise ConfigException('volumes[%d].name is not unique: %s'
+                                  % (vol_index, vol_name))
         all_vol_names.append(vol_name)
 
     return all_vol_names
@@ -138,18 +144,19 @@ def LoadUserContainers(containers, all_volumes):
     for ctr_index, ctr_spec in enumerate(containers):
         # Verify the container name.
         if 'name' not in ctr_spec:
-            raise Exception('containers[%d] has no name' % (ctr_index))
+            raise ConfigException('containers[%d] has no name' % (ctr_index))
         if not IsRfc1035Name(ctr_spec['name']):
-            raise Exception('containers[%d].name is invalid: %s'
-                            % (ctr_index, ctr_spec['name']))
+            raise ConfigException('containers[%d].name is invalid: %s'
+                                  % (ctr_index, ctr_spec['name']))
         if ctr_spec['name'] in all_ctr_names:
-            raise Exception('containers[%d].name is not unique: %s'
-                            % (ctr_index, ctr_spec['name']))
+            raise ConfigException('containers[%d].name is not unique: %s'
+                                  % (ctr_index, ctr_spec['name']))
         all_ctr_names.append(ctr_spec['name'])
 
         # Verify the container image.
         if 'image' not in ctr_spec:
-            raise Exception('containers[%s] has no image' % (ctr_spec['name']))
+            raise ConfigException('containers[%s] has no image'
+                                  % (ctr_spec['name']))
 
         # The current accumulation of parameters.
         current_ctr = Container(ctr_spec['name'], ctr_spec['image'])
@@ -164,8 +171,9 @@ def LoadUserContainers(containers, all_volumes):
         current_ctr.working_dir = ctr_spec.get('workingDir', None)
         if current_ctr.working_dir is not None:
             if not IsValidPath(current_ctr.working_dir):
-                raise Exception('containers[%s].workingDir is invalid: %s'
-                                % (current_ctr.name, current_ctr.working_dir))
+                raise ConfigException(
+                    'containers[%s].workingDir is invalid: %s'
+                    % (current_ctr.name, current_ctr.working_dir))
 
         # Get the list of port mappings.
         current_ctr.ports = LoadPorts(
@@ -196,36 +204,43 @@ def LoadPorts(ports_spec, ctr_name):
         if 'name' in port_spec:
             port_name = port_spec['name']
             if not IsRfc1035Name(port_name):
-                raise Exception('containers[%s].ports[%d].name is invalid: %s'
-                                % (ctr_name, port_index, port_name))
+                raise ConfigException(
+                    'containers[%s].ports[%d].name is invalid: %s'
+                    % (ctr_name, port_index, port_name))
             if port_name in all_port_names:
-                raise Exception('containers[%s].ports[%d].name is not unique: %s'
-                                % (ctr_name, port_index, port_name))
+                raise ConfigException(
+                    'containers[%s].ports[%d].name is not unique: %s'
+                    % (ctr_name, port_index, port_name))
             all_port_names.append(port_name)
         else:
             port_name = str(port_index)
 
         if 'containerPort' not in port_spec:
-            raise Exception('containers[%s].ports[%s] has no containerPort'
-                            % (ctr_name, port_name))
+            raise ConfigException(
+                'containers[%s].ports[%s] has no containerPort'
+                % (ctr_name, port_name))
         ctr_port = port_spec['containerPort']
         if not IsValidPort(ctr_port):
-            raise Exception('containers[%s].ports[%s].containerPort is invalid: %d'
-                            % (ctr_name, port_name, ctr_port))
+            raise ConfigException(
+                'containers[%s].ports[%s].containerPort is invalid: %d'
+                % (ctr_name, port_name, ctr_port))
 
         host_port = port_spec.get('hostPort', ctr_port)
         if not IsValidPort(host_port):
-            raise Exception('containers[%s].ports[%s].hostPort is invalid: %d'
-                            % (ctr_name, port_name, host_port))
+            raise ConfigException(
+                'containers[%s].ports[%s].hostPort is invalid: %d'
+                % (ctr_name, port_name, host_port))
         if host_port in all_host_port_nums:
-            raise Exception('containers[%s].ports[%s].hostPort is not unique: %d'
-                            % (ctr_name, port_name, host_port))
+            raise ConfigException(
+                'containers[%s].ports[%s].hostPort is not unique: %d'
+                % (ctr_name, port_name, host_port))
         all_host_port_nums.append(host_port)
 
         proto = port_spec.get('protocol', 'TCP')
         if not IsValidProtocol(proto):
-            raise Exception('containers[%s].ports[%s].protocol is invalid: %s'
-                            % (ctr_name, port_name, proto))
+            raise ConfigException(
+                'containers[%s].ports[%s].protocol is invalid: %s'
+                % (ctr_name, port_name, proto))
 
         all_ports.append((host_port, ctr_port, ProtocolString(proto)))
 
@@ -239,25 +254,30 @@ def LoadVolumeMounts(mounts_spec, all_volumes, ctr_name):
     all_mounts = []
     for vol_index, vol_spec in enumerate(mounts_spec):
         if 'name' not in vol_spec:
-            raise Exception('containers[%s].volumeMounts[%d] has no name'
-                            % (ctr_name, vol_index))
+            raise ConfigException(
+                'containers[%s].volumeMounts[%d] has no name'
+                % (ctr_name, vol_index))
         vol_name = vol_spec['name']
         if not IsRfc1035Name(vol_name):
-            raise Exception('containers[%s].volumeMounts[%d].name'
-                            'is invalid: %s'
-                            % (ctr_name, vol_index, vol_name))
+            raise ConfigException(
+                'containers[%s].volumeMounts[%d].name'
+                'is invalid: %s'
+                % (ctr_name, vol_index, vol_name))
         if vol_name not in all_volumes:
-            raise Exception('containers[%s].volumeMounts[%d].name'
-                            'is not a known volume: %s'
-                            % (ctr_name, vol_index, vol_name))
+            raise ConfigException(
+                'containers[%s].volumeMounts[%d].name'
+                'is not a known volume: %s'
+                % (ctr_name, vol_index, vol_name))
 
         if 'path' not in vol_spec:
-            raise Exception('containers[%s].volumeMounts[%s] has no path'
-                            % (ctr_name, vol_name))
+            raise ConfigException(
+                'containers[%s].volumeMounts[%s] has no path'
+                % (ctr_name, vol_name))
         vol_path = vol_spec['path']
         if not IsValidPath(vol_path):
-            raise Exception('containers[%s].volumeMounts[%s].path is invalid: %s'
-                            % (ctr_name, vol_name, vol_path))
+            raise ConfigException(
+                'containers[%s].volumeMounts[%s].path is invalid: %s'
+                % (ctr_name, vol_name, vol_path))
 
         read_mode = 'ro' if vol_spec.get('readOnly', False) else 'rw'
 
@@ -274,14 +294,16 @@ def LoadEnvVars(env_spec, ctr_name):
     all_env_vars = []
     for env_index, env_spec in enumerate(env_spec):
         if 'key' not in env_spec:
-            raise Exception('containers[%s].env[%d] has no key' % (ctr_name, env_index))
+            raise ConfigException('containers[%s].env[%d] has no key'
+                                  % (ctr_name, env_index))
         env_key = env_spec['key']
         if not IsCToken(env_key):
-            raise Exception('containers[%s].env[%d].key is invalid: %s'
-                            % (ctr_name, env_index, env_key))
+            raise ConfigException('containers[%s].env[%d].key is invalid: %s'
+                                  % (ctr_name, env_index, env_key))
 
         if 'value' not in env_spec:
-            raise Exception('containers[%s].env[%s] has no value' % (ctr_name, env_key))
+            raise ConfigException('containers[%s].env[%s] has no value'
+                                  % (ctr_name, env_key))
         env_val = env_spec['value']
 
         all_env_vars.append('%s=%s' % (env_key, env_val))
@@ -297,7 +319,8 @@ def CheckGroupWideConflicts(containers):
         for port in ctr.ports:
             h = '%s%s' % (port[0], port[2])
             if h in host_ports:
-                raise Exception('host port %s is not unique group-wide' % (h))
+                raise ConfigException(
+                    'host port %s is not unique group-wide' % (h))
             host_ports.add(h)
 
 
@@ -365,10 +388,12 @@ def ContainerHash(ctr):
 def RunContainers(containers, namespace):
     docker = CliDockerClient()
     prefix = '%s-' % (namespace, )
-    named = dict(('%s%s-%s' % (prefix, ctr.name, ContainerHash(ctr)), ctr) for ctr in containers)
+    named = dict(('%s%s-%s' % (prefix, ctr.name, ContainerHash(ctr)), ctr)
+                 for ctr in containers)
 
     # First reap containers that might collide with the desired state
-    running = [name for name in docker.list_containers(prefix) if name.startswith(prefix)]
+    running = [name for name in docker.list_containers(prefix)
+               if name.startswith(prefix)]
     for name in running:
         log.debug('in %s namespace: %s', namespace, name)
         if name not in named:
@@ -382,9 +407,10 @@ def RunContainers(containers, namespace):
 
 def CheckVersion(config):
     if 'version' not in config:
-        raise Exception('config has no version field')
+        raise ConfigException('config has no version field')
     if config['version'] not in SUPPORTED_CONFIG_VERSIONS:
-        raise Exception("config version '%s' is not supported" % config['version'])
+        raise ConfigException("config version '%s' is not supported"
+                              % config['version'])
 
 
 def RunContainersFromConfigFile(config_file, reload_interval, namespace):
@@ -407,25 +433,29 @@ def RunContainersFromConfigFile(config_file, reload_interval, namespace):
 
 
 def main():
-    parser = ArgumentParser(description='container-agent', formatter_class=ArgumentDefaultsHelpFormatter)
+    parser = ArgumentParser(description='container-agent',
+                            formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument('--syslog', help='log to syslog', action='store_true')
     parser.add_argument('-v', '--verbosity', action='count', default=0)
     parser.add_argument('--namespace', default='container-agent')
-    parser.add_argument('-r', '--reload', default=5, help='file reload interval')
+    parser.add_argument('-r', '--reload', default=5,
+                        help='file reload interval')
     parser.add_argument('containers', metavar='containers.yaml')
     args = parser.parse_args()
 
     if args.syslog:
         facility = SysLogHandler.LOG_LOCAL0
-        if sys.platform.startswith('darwin') and os.path.exists('/var/run/syslog'):
+        if sys.platform.startswith('darwin') and \
+           os.path.exists('/var/run/syslog'):
             handler = SysLogHandler('/var/run/syslog', facility)
         elif sys.platform.startswith('sunos'):
-            handler = SysLogHandler(('127.0.0.1', logging.handlers.SYSLOG_UDP_PORT), facility)
+            handler = SysLogHandler(('127.0.0.1', SYSLOG_UDP_PORT), facility)
         else:
             handler = SysLogHandler('/dev/log', facility)
         log.addHandler(handler)
 
-    logging.basicConfig(format='%(asctime)s %(levelname)-7s %(filename)s:%(lineno)d %(message)s',
+    logging.basicConfig(format='%(asctime)s %(levelname)-7s '
+                               '%(filename)s:%(lineno)d %(message)s',
                         level=max(DEBUG, WARNING - args.verbosity * 10))
 
     format = "%(asctime)s.%(msecs)03d [%(process)d]: %(message)s"
