@@ -26,28 +26,28 @@ provided.
 
 This will log to syslog's LOCAL3 facility.
 
-On networking:  This program assumes that all of the containers in the manifest
-constitute a group.  For simplicity, a group shares a network namespace (via
---net=container:<name>).  This means that all containers can see each other as
-"localhost", but it also means that the set of ports they use must be unique
-across the group.  We want to revisit this.
-
 Environmental requirements:
-  - Docker 0.11 or higher (for the --net flag)
-  - Docker daemon runs with =r=false (for safer restart behavior)
+  - Docker 0.11 or higher
+  - Docker daemon runs with -r=false (for safer restart behavior)
 
 """
 
+import logging
 import os
 import re
-import subprocess
 import sys
-import syslog
 import time
 import yaml
 
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from logging import WARNING, DEBUG
+from logging.handlers import SysLogHandler
+from hashlib import sha1
 
-PROGNAME = 'containervm-agent'
+from docker_client import CliDockerClient
+
+log = logging.getLogger(__name__)
+
 
 SUPPORTED_CONFIG_VERSIONS = ['v1beta1']
 
@@ -61,41 +61,6 @@ MAX_PATH_LEN = 512
 
 DOCKER_CMD = 'docker'
 VOLUMES_ROOT_DIR = '/export'
-LOG_CMD = 'logger -p local3.info -t %s --' % (PROGNAME)
-
-KEEPALIVE_SCRIPT = """
-  while true; do
-    read PID </proc/self/stat; PID=$(echo $PID | cut -f1 -d' ');
-    %(log)s "keepalive for container '%(name)s' (%(id)s) running as PID $PID";
-    STATUS=$(%(docker)s wait '%(id)s' 2>/dev/null);
-    %(log)s "container '%(name)s' (%(id)s) exited with status " $STATUS;
-    if ! %(docker)s inspect '%(id)s' >/dev/null 2>&1; then
-      %(log)s "container '%(name)s' (%(id)s) no longer exists: " \
-          "halting keepalive (PID $PID)";
-      break;
-    fi;
-    sleep 1;
-    %(log)s "container '%(name)s' (%(id)s) restarting";
-    %(docker)s restart '%(id)s' >/dev/null 2>&1;
-  done &
-  """
-
-
-def LogInfo(msg):
-    syslog.syslog(syslog.LOG_LOCAL3 | syslog.LOG_INFO, msg)
-
-
-def LogError(msg):
-    syslog.syslog(syslog.LOG_LOCAL3 | syslog.LOG_ERR, msg)
-
-
-def Fatal(*args):
-    """Logs a fatal error to syslog and stderr and exits."""
-    err_str = 'FATAL: ' + ' '.join(map(str, args))
-    sys.stderr.write(err_str + '\n')
-    LogError(err_str)
-    # TODO(thockin): It would probably be cleaner to raise an exception.
-    sys.exit(1)
 
 
 def IsValidProtocol(proto):
@@ -132,12 +97,12 @@ def LoadVolumes(volumes):
     for vol_index, vol in enumerate(volumes):
         # Get the container name.
         if 'name' not in vol:
-            Fatal('volumes[%d] has no name' % (vol_index))
+            raise Exception('volumes[%d] has no name' % (vol_index))
         vol_name = vol['name']
         if not IsRfc1035Name(vol_name):
-            Fatal('volumes[%d].name is invalid: %s' % (vol_index, vol_name))
+            raise Exception('volumes[%d].name is invalid: %s' % (vol_index, vol_name))
         if vol_name in all_vol_names:
-            Fatal('volumes[%d].name is not unique: %s' % (vol_index, vol_name))
+            raise Exception('volumes[%d].name is not unique: %s' % (vol_index, vol_name))
         all_vol_names.append(vol_name)
 
     return all_vol_names
@@ -150,7 +115,7 @@ class Container(object):
 
     # Only allow the supported params.
     __slots__ = ('name', 'image', 'command', 'hostname', 'working_dir',
-                 'ports', 'mounts', 'env_vars', 'network_from')
+                 'ports', 'mounts', 'env_vars')
 
     def __init__(self, name, image):
         self.name = name          # required str
@@ -161,23 +126,6 @@ class Container(object):
         self.ports = []           # [(int, int, str)]
         self.mounts = []          # [str]
         self.env_vars = []        # [str]
-        self.network_from = None  # str
-
-
-def LoadInfraContainers(user_containers):
-    """Return a list of infrastructural containers required for this group."""
-
-    # Shared network namespace.
-    net_ctr = Container('.net', 'busybox')
-    net_ctr.command = ['sh', '-c', 'rm -f nap && mkfifo nap && exec cat nap']
-    for user_ctr in user_containers:
-        # The port flags must be on the shared network container.
-        # This seems like a bug in Docker.
-
-        net_ctr.ports.extend(user_ctr.ports)
-        user_ctr.ports = []
-
-    return [net_ctr]
 
 
 def LoadUserContainers(containers, all_volumes):
@@ -190,18 +138,18 @@ def LoadUserContainers(containers, all_volumes):
     for ctr_index, ctr_spec in enumerate(containers):
         # Verify the container name.
         if 'name' not in ctr_spec:
-            Fatal('containers[%d] has no name' % (ctr_index))
+            raise Exception('containers[%d] has no name' % (ctr_index))
         if not IsRfc1035Name(ctr_spec['name']):
-            Fatal('containers[%d].name is invalid: %s'
-                  % (ctr_index, ctr_spec['name']))
+            raise Exception('containers[%d].name is invalid: %s'
+                            % (ctr_index, ctr_spec['name']))
         if ctr_spec['name'] in all_ctr_names:
-            Fatal('containers[%d].name is not unique: %s'
-                  % (ctr_index, ctr_spec['name']))
+            raise Exception('containers[%d].name is not unique: %s'
+                            % (ctr_index, ctr_spec['name']))
         all_ctr_names.append(ctr_spec['name'])
 
         # Verify the container image.
         if 'image' not in ctr_spec:
-            Fatal('containers[%s] has no image' % (ctr_spec['name']))
+            raise Exception('containers[%s] has no image' % (ctr_spec['name']))
 
         # The current accumulation of parameters.
         current_ctr = Container(ctr_spec['name'], ctr_spec['image'])
@@ -216,8 +164,8 @@ def LoadUserContainers(containers, all_volumes):
         current_ctr.working_dir = ctr_spec.get('workingDir', None)
         if current_ctr.working_dir is not None:
             if not IsValidPath(current_ctr.working_dir):
-                Fatal('containers[%s].workingDir is invalid: %s'
-                      % (current_ctr.name, current_ctr.working_dir))
+                raise Exception('containers[%s].workingDir is invalid: %s'
+                                % (current_ctr.name, current_ctr.working_dir))
 
         # Get the list of port mappings.
         current_ctr.ports = LoadPorts(
@@ -230,9 +178,6 @@ def LoadUserContainers(containers, all_volumes):
         # Get the list of environment variables.
         current_ctr.env_vars = LoadEnvVars(
             ctr_spec.get('env', []), current_ctr.name)
-
-        # Set the network linkage.
-        current_ctr.network_from = 'container:.net'
 
         all_ctrs.append(current_ctr)
 
@@ -251,36 +196,36 @@ def LoadPorts(ports_spec, ctr_name):
         if 'name' in port_spec:
             port_name = port_spec['name']
             if not IsRfc1035Name(port_name):
-                Fatal('containers[%s].ports[%d].name is invalid: %s'
-                      % (ctr_name, port_index, port_name))
+                raise Exception('containers[%s].ports[%d].name is invalid: %s'
+                                % (ctr_name, port_index, port_name))
             if port_name in all_port_names:
-                Fatal('containers[%s].ports[%d].name is not unique: %s'
-                      % (ctr_name, port_index, port_name))
+                raise Exception('containers[%s].ports[%d].name is not unique: %s'
+                                % (ctr_name, port_index, port_name))
             all_port_names.append(port_name)
         else:
             port_name = str(port_index)
 
         if 'containerPort' not in port_spec:
-            Fatal('containers[%s].ports[%s] has no containerPort'
-                  % (ctr_name, port_name))
+            raise Exception('containers[%s].ports[%s] has no containerPort'
+                            % (ctr_name, port_name))
         ctr_port = port_spec['containerPort']
         if not IsValidPort(ctr_port):
-            Fatal('containers[%s].ports[%s].containerPort is invalid: %d'
-                  % (ctr_name, port_name, ctr_port))
+            raise Exception('containers[%s].ports[%s].containerPort is invalid: %d'
+                            % (ctr_name, port_name, ctr_port))
 
         host_port = port_spec.get('hostPort', ctr_port)
         if not IsValidPort(host_port):
-            Fatal('containers[%s].ports[%s].hostPort is invalid: %d'
-                  % (ctr_name, port_name, host_port))
+            raise Exception('containers[%s].ports[%s].hostPort is invalid: %d'
+                            % (ctr_name, port_name, host_port))
         if host_port in all_host_port_nums:
-            Fatal('containers[%s].ports[%s].hostPort is not unique: %d'
-                  % (ctr_name, port_name, host_port))
+            raise Exception('containers[%s].ports[%s].hostPort is not unique: %d'
+                            % (ctr_name, port_name, host_port))
         all_host_port_nums.append(host_port)
 
         proto = port_spec.get('protocol', 'TCP')
         if not IsValidProtocol(proto):
-            Fatal('containers[%s].ports[%s].protocol is invalid: %s'
-                  % (ctr_name, port_name, proto))
+            raise Exception('containers[%s].ports[%s].protocol is invalid: %s'
+                            % (ctr_name, port_name, proto))
 
         all_ports.append((host_port, ctr_port, ProtocolString(proto)))
 
@@ -294,25 +239,25 @@ def LoadVolumeMounts(mounts_spec, all_volumes, ctr_name):
     all_mounts = []
     for vol_index, vol_spec in enumerate(mounts_spec):
         if 'name' not in vol_spec:
-            Fatal('containers[%s].volumeMounts[%d] has no name'
-                  % (ctr_name, vol_index))
+            raise Exception('containers[%s].volumeMounts[%d] has no name'
+                            % (ctr_name, vol_index))
         vol_name = vol_spec['name']
         if not IsRfc1035Name(vol_name):
-            Fatal('containers[%s].volumeMounts[%d].name'
-                  'is invalid: %s'
-                  % (ctr_name, vol_index, vol_name))
+            raise Exception('containers[%s].volumeMounts[%d].name'
+                            'is invalid: %s'
+                            % (ctr_name, vol_index, vol_name))
         if vol_name not in all_volumes:
-            Fatal('containers[%s].volumeMounts[%d].name'
-                  'is not a known volume: %s'
-                  % (ctr_name, vol_index, vol_name))
+            raise Exception('containers[%s].volumeMounts[%d].name'
+                            'is not a known volume: %s'
+                            % (ctr_name, vol_index, vol_name))
 
         if 'path' not in vol_spec:
-            Fatal('containers[%s].volumeMounts[%s] has no path'
-                  % (ctr_name, vol_name))
+            raise Exception('containers[%s].volumeMounts[%s] has no path'
+                            % (ctr_name, vol_name))
         vol_path = vol_spec['path']
         if not IsValidPath(vol_path):
-            Fatal('containers[%s].volumeMounts[%s].path is invalid: %s'
-                  % (ctr_name, vol_name, vol_path))
+            raise Exception('containers[%s].volumeMounts[%s].path is invalid: %s'
+                            % (ctr_name, vol_name, vol_path))
 
         read_mode = 'ro' if vol_spec.get('readOnly', False) else 'rw'
 
@@ -329,14 +274,14 @@ def LoadEnvVars(env_spec, ctr_name):
     all_env_vars = []
     for env_index, env_spec in enumerate(env_spec):
         if 'key' not in env_spec:
-            Fatal('containers[%s].env[%d] has no key' % (ctr_name, env_index))
+            raise Exception('containers[%s].env[%d] has no key' % (ctr_name, env_index))
         env_key = env_spec['key']
         if not IsCToken(env_key):
-            Fatal('containers[%s].env[%d].key is invalid: %s'
-                  % (ctr_name, env_index, env_key))
+            raise Exception('containers[%s].env[%d].key is invalid: %s'
+                            % (ctr_name, env_index, env_key))
 
         if 'value' not in env_spec:
-            Fatal('containers[%s].env[%s] has no value' % (ctr_name, env_key))
+            raise Exception('containers[%s].env[%s] has no value' % (ctr_name, env_key))
         env_val = env_spec['value']
 
         all_env_vars.append('%s=%s' % (env_key, env_val))
@@ -348,17 +293,12 @@ def CheckGroupWideConflicts(containers):
     # TODO(thockin): we could put other uniqueness checks (e.g. name) here.
     # Make sure not two containers have conflicting host or container ports.
     host_ports = set()
-    ctr_ports = set()
     for ctr in containers:
         for port in ctr.ports:
             h = '%s%s' % (port[0], port[2])
             if h in host_ports:
-                Fatal('host port %s is not unique group-wide' % (h))
+                raise Exception('host port %s is not unique group-wide' % (h))
             host_ports.add(h)
-            c = '%s%s' % (port[1], port[2])
-            if c in ctr_ports:
-                Fatal('container port %s is not unique group-wide' % (c))
-            ctr_ports.add(c)
 
 
 def FlagList(values, flag):
@@ -392,102 +332,107 @@ def FlagOrNothing(value, flag):
     return []
 
 
-def RunContainers(containers):
-    # TODO(thockin): This does not remove containers which used to be in the
-    # config but are not any more.
-    for ctr in containers:
-        # Log and run the container, with a keepalive if needed.
-        # TODO(thockin): We would have a distinct log file per-group,
-        # but we only support one group.
-        LogInfo("starting container '%s'" % (ctr.name))
+def StartContainer(docker, name, ctr):
+    log.info("starting new container '%s'", ctr.name)
+    docker.run(image=ctr.image,
+               ports=ctr.ports,
+               volumes=ctr.mounts,
+               env=ctr.env_vars,
+               command=ctr.command,
+               name=name)
 
-        # Pull the image.  Retry for up to 30 seconds.
-        for pulls_left in range(9, -1, -1):
-            proc = subprocess.Popen(
-                [DOCKER_CMD, 'pull', ctr.image],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT)
-            o, _ = proc.communicate()
-            if proc.returncode == 0:
-                break
-            else:
-                LogInfo(o)
-                if pulls_left == 0:
-                    Fatal('failed to pull %s' % (ctr.image))
-                LogInfo('could not pull %s, will retry %d more time%s'
-                        % (ctr.image, pulls_left, 's'
-                           if pulls_left > 1 else ''))
-                time.sleep(3)
 
-        # Unilaterally destroy any extant container that is already running
-        # with the same name.
-        # TODO(thockin): If this was smart, it would actually check the config
-        # of the running container and leave it alone if it was correct.
-        subprocess.call(
-            [DOCKER_CMD, 'kill', ctr.name],
-            stdout=open('/dev/null', 'w'),
-            stderr=open('/dev/null', 'w'))
-        subprocess.call(
-            [DOCKER_CMD, 'rm', '-f', ctr.name],
-            stdout=open('/dev/null', 'w'),
-            stderr=open('/dev/null', 'w'))
+def RunContainer(docker, name, ctr):
+    infos = docker.inspect_container(name)
+    info = infos and infos[0]
+    if info:
+        running = info['State']['Running']
+        if not running:
+            exit_code = info['State']['ExitCode']
+            log.info("restarting exited container '%s' (%d)", name, exit_code)
+            docker.destroy(name)
+            StartContainer(docker, name, ctr)
+    else:
+        StartContainer(docker, name, ctr)
 
-        proc = subprocess.Popen(
-            [DOCKER_CMD, 'run', '-d'] +
-            ['--name', ctr.name] +
-            FlagOrNothing(ctr.hostname, '--hostname') +
-            FlagOrNothing(ctr.working_dir, '--workdir') +
-            FlagOrNothing(ctr.network_from, '--net') +
-            FlagList(['%s:%s%s' % (p[0], p[1], p[2])
-                      for p in ctr.ports], '-p') +
-            FlagList(ctr.mounts, '-v') +
-            FlagList(ctr.env_vars, '-e') +
-            [ctr.image] +
-            ctr.command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT)
-        o, _ = proc.communicate()
-        if proc.returncode == 0:
-            ctr_id = o.strip()
-        else:
-            LogInfo(o)
-            Fatal("failed to run container '%s'" % (ctr.name))
 
-        os.system(KEEPALIVE_SCRIPT %
-                  {'docker': DOCKER_CMD, 'log': LOG_CMD,
-                   'name': ctr.name, 'id': ctr_id})
+def ContainerHash(ctr):
+    m = sha1()
+    m.update(yaml.dump(ctr))
+    return m.hexdigest()[:8]
+
+
+def RunContainers(containers, namespace):
+    docker = CliDockerClient()
+    prefix = '%s-' % (namespace, )
+    named = dict(('%s%s-%s' % (prefix, ctr.name, ContainerHash(ctr)), ctr) for ctr in containers)
+
+    # First reap containers that might collide with the desired state
+    running = [name for name in docker.list_containers(prefix) if name.startswith(prefix)]
+    for name in running:
+        log.debug('in %s namespace: %s', namespace, name)
+        if name not in named:
+            log.info('reaping unwanted container: %s', name)
+            docker.kill(name)
+
+    # Implement desired state
+    for name, ctr in named.iteritems():
+        RunContainer(docker, name, ctr)
 
 
 def CheckVersion(config):
     if 'version' not in config:
-        Fatal('config has no version field')
+        raise Exception('config has no version field')
     if config['version'] not in SUPPORTED_CONFIG_VERSIONS:
-        Fatal("config version '%s' is not supported" % config['version'])
+        raise Exception("config version '%s' is not supported" % config['version'])
+
+
+def RunContainersFromConfigFile(config_file, reload_interval, namespace):
+    while True:
+        try:
+            log.debug('loading config file: %s', config_file)
+            with open(config_file) as f:
+                config = yaml.load(f)
+            CheckVersion(config)
+            all_volumes = LoadVolumes(config.get('volumes', []))
+            user_containers = LoadUserContainers(config.get('containers', []),
+                                                 all_volumes)
+            CheckGroupWideConflicts(user_containers)
+            RunContainers(user_containers, namespace)
+        except Exception, e:
+            log.error(e)
+        finally:
+            log.debug('sleeping %d seconds', reload_interval)
+            time.sleep(float(reload_interval))
 
 
 def main():
-    if len(sys.argv) > 2:
-        Fatal('usage: %s [containers.yaml]' % sys.argv[0])
+    parser = ArgumentParser(description='container-agent', formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--syslog', help='log to syslog', action='store_true')
+    parser.add_argument('-v', '--verbosity', action='count', default=0)
+    parser.add_argument('--namespace', default='container-agent')
+    parser.add_argument('-r', '--reload', default=5, help='file reload interval')
+    parser.add_argument('containers', metavar='containers.yaml')
+    args = parser.parse_args()
 
-    if len(sys.argv) == 2:
-        with open(sys.argv[1], 'r') as fp:
-            config = yaml.load(fp)
-    else:
-        config = yaml.load(sys.stdin)
+    if args.syslog:
+        facility = SysLogHandler.LOG_LOCAL0
+        if sys.platform.startswith('darwin') and os.path.exists('/var/run/syslog'):
+            handler = SysLogHandler('/var/run/syslog', facility)
+        elif sys.platform.startswith('sunos'):
+            handler = SysLogHandler(('127.0.0.1', logging.handlers.SYSLOG_UDP_PORT), facility)
+        else:
+            handler = SysLogHandler('/dev/log', facility)
+        log.addHandler(handler)
 
-    syslog.openlog(PROGNAME)
-    LogInfo('processing container manifest')
+    logging.basicConfig(format='%(asctime)s %(levelname)-7s %(filename)s:%(lineno)d %(message)s',
+                        level=max(DEBUG, WARNING - args.verbosity * 10))
 
-    CheckVersion(config)
+    format = "%(asctime)s.%(msecs)03d [%(process)d]: %(message)s"
+    logging.basicConfig(level=logging.DEBUG, format=format,
+                        datefmt='%Y-%m-%d %H:%M:%S')
 
-    all_volumes = LoadVolumes(config.get('volumes', []))
-    user_containers = LoadUserContainers(config.get('containers', []),
-                                         all_volumes)
-    CheckGroupWideConflicts(user_containers)
-
-    if user_containers:
-        infra_containers = LoadInfraContainers(user_containers)
-        RunContainers(infra_containers + user_containers)
+    RunContainersFromConfigFile(args.containers, args.reload, args.namespace)
 
 if __name__ == '__main__':
     main()
