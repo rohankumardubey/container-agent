@@ -425,8 +425,8 @@ def RunContainersFromConfigFile(config_file, reload_interval, namespace):
                                                  all_volumes)
             CheckGroupWideConflicts(user_containers)
             RunContainers(user_containers, namespace)
-        except Exception, e:
-            log.error(e)
+        except Exception:
+            log.exception()
         finally:
             log.debug('sleeping %d seconds', reload_interval)
             time.sleep(float(reload_interval))
