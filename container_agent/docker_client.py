@@ -22,16 +22,11 @@ from subprocess import Popen, PIPE
 log = logging.getLogger(__name__)
 
 
-DOCKER_HOST = environ.get('DOCKER_HOST', 'unix:///var/run/docker.sock')
+DEFAULT_DOCKER_HOST = 'unix:///var/run/docker.sock'
+DOCKER_HOST = environ.get('DOCKER_HOST', DEFAULT_DOCKER_HOST)
 
-try:
-    p = Popen('which docker', stdout=PIPE, stderr=PIPE, shell=True)
-    out, err = p.communicate()
-    if p.returncode:
-        raise Exception()
-    DEFAULT_DOCKER_CLI = out.strip()
-except:
-    DEFAULT_DOCKER_CLI = '/usr/bin/docker'
+DEFAULT_DOCKER_CLI = '/usr/bin/docker'
+DOCKER_CLI = environ.get('DOCKER_CLI')
 
 
 def escape(word):
@@ -59,9 +54,39 @@ class CliDockerClientError(DockerClientError):
 
 
 class CliDockerClient(object):
+
+    __detected_system_cli = None
+
+    @staticmethod
+    def detect_system_cli():
+        if DOCKER_CLI is not None:
+            return DOCKER_CLI
+        default_msg = 'error detecting docker cli, using default (%s)' % \
+                      (DEFAULT_DOCKER_CLI, )
+        try:
+            p = Popen('which docker', stdout=PIPE, stderr=PIPE, shell=True)
+        except:
+            log.exception(default_msg)
+            return DEFAULT_DOCKER_CLI
+        else:
+            out, err = p.communicate()
+            if p.returncode == 0:
+                location = out.strip()
+                log.debug('detected docker cli: %s', location)
+                return location
+            else:
+                log.warn(default_msg)
+                return DEFAULT_DOCKER_CLI
+
+    @classmethod
+    def __system_cli(cls):
+        if cls.__detected_system_cli is None:
+            cls.__detected_system_cli = cls.detect_system_cli()
+        return cls.__detected_system_cli
+
     def __init__(self, docker=None, endpoint=None):
         super(CliDockerClient, self).__init__()
-        self.docker = docker if docker is not None else DEFAULT_DOCKER_CLI
+        self.docker = docker if docker is not None else self.__system_cli()
         self.endpoint = endpoint if endpoint is not None else DOCKER_HOST
 
     def cli(self, *args):
