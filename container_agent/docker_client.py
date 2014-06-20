@@ -54,11 +54,13 @@ class CliDockerClientError(DockerClientError):
 
 
 class CliDockerClient(object):
+    """ A docker client that uses the docker cli to communicate with the docker
+    daemon."""
 
     __detected_system_cli = None
 
     @staticmethod
-    def detect_system_cli():
+    def __detect_system_cli():
         if DOCKER_CLI is not None:
             return DOCKER_CLI
         default_msg = 'error detecting docker cli, using default (%s)' % \
@@ -81,15 +83,42 @@ class CliDockerClient(object):
     @classmethod
     def __system_cli(cls):
         if cls.__detected_system_cli is None:
-            cls.__detected_system_cli = cls.detect_system_cli()
+            cls.__detected_system_cli = cls.__detect_system_cli()
         return cls.__detected_system_cli
 
     def __init__(self, docker=None, endpoint=None):
+        """ Create a docker client.
+
+        Args:
+          docker: location of the docker cli. If None or not provided, the
+                  location will resolved in the order of precedence:
+                  1. DOCKER_CLI environment variable
+                  2. `which docker`
+                  3. use /usr/bin/docker
+
+          endpoint: The docker endpoint. If None or not provided, then
+                    environment variable DOCKER_HOST will be used.
+
+        """
+
         super(CliDockerClient, self).__init__()
         self.docker = docker if docker is not None else self.__system_cli()
         self.endpoint = endpoint if endpoint is not None else DOCKER_HOST
 
     def cli(self, *args):
+        """Execute a docker cli command.
+
+        Args:
+          args: cli arguments
+
+        Returns:
+          returncode, stdout, stderr
+
+        Example:
+          cli('build', '-t', 'foobar', '.')
+
+        """
+
         command = (self.docker, '-H=%s' % self.endpoint) + tuple(args)
         log.debug('cli: %s', command)
         log.debug('cli: shell style: %s', ' '.join(escape(word)
@@ -100,14 +129,42 @@ class CliDockerClient(object):
         return p.returncode, out, err
 
     def cli_check(self, *args):
+        """Execute a docker cli command.
+           Raises DockerClientError if returncode != 0.
+
+        Args:
+          args: cli arguments
+
+        Returns:
+          stdout
+
+        Example:
+          cli('build', '-t', 'foobar', '.')
+
+        """
+
         code, out, err = self.cli(*args)
         if code:
             raise CliDockerClientError(args, code, out, err)
         return out
 
-    def inspect_container(self, container_id):
-        log.debug('inspect_container %s', container_id)
-        code, out, err = self.cli('inspect', container_id)
+    def inspect_container(self, container):
+        """Inspect a container.
+
+        Args:
+          container: container id or name
+
+        Returns:
+          list of dicts with info for matching containers.
+
+        Example:
+          inspect_container('d88916009fe2')
+          inspect_container('mysql')
+
+        """
+
+        log.debug('inspect_container %s', container)
+        code, out, err = self.cli('inspect', container)
         return loads(out)
 
     def run(self,
@@ -117,6 +174,25 @@ class CliDockerClient(object):
             name=None,
             volumes=None,
             env=None):
+        """Start a new container.
+
+        Args:
+          image: container image to run
+          command: command to run
+          ports: ports to expose. list of (internal, external, proto) tuples.
+                 external and proto is optional.
+
+        Returns:
+          "docker run -d" stdout output
+
+        Example:
+          run(image='busybox',
+              command=['nc', '-p', '4711', '-lle', 'cat'],
+              ports=[(4711, 4711, tcp)],
+              name='netcat-echo')
+
+        """
+
         log.debug('run_daemon %s', image)
         assert image
         ports = ports or []
@@ -134,23 +210,94 @@ class CliDockerClient(object):
         args.extend(command)
         return self.cli_check('run', '-d', *args).strip()
 
-    def start(self, container_id):
-        log.debug('start %s', container_id)
-        self.cli_check('start', container_id)
+    def start(self, container):
+        """Start an existing container.
 
-    def stop(self, container_id):
-        log.debug('stop %s', container_id)
-        self.cli_check('stop', container_id)
+        Args:
+          container: container id or name to start
 
-    def kill(self, container_id):
-        log.debug('kill %s', container_id)
-        self.cli_check('kill', container_id)
+        Returns:
+          None
 
-    def destroy(self, container_id):
-        log.debug('destroy %s', container_id)
-        self.cli_check('rm', container_id)
+        Example:
+          start('d88916009fe2')
+          start('mysql')
+
+        """
+        log.debug('start %s', container)
+        self.cli_check('start', container)
+
+    def stop(self, container):
+        """Stop a running container.
+
+        Args:
+          container: container id or name to stop
+
+        Returns:
+          None
+
+        Example:
+          stop('d88916009fe2')
+          stop('mysql')
+
+        """
+        log.debug('stop %s', container)
+        self.cli_check('stop', container)
+
+    def kill(self, container):
+        """Kill a running container.
+
+        Args:
+          container: container id or name to kill
+
+        Returns:
+          None
+
+        Example:
+          kill('d88916009fe2')
+          kill('mysql')
+
+        """
+        log.debug('kill %s', container)
+        self.cli_check('kill', container)
+
+    def destroy(self, container):
+        """Remove a container.
+
+        Args:
+          container: container id or name to remove
+
+        Returns:
+          None
+
+        Example:
+          destroy('d88916009fe2')
+          destroy('mysql')
+
+        """
+        log.debug('destroy %s', container)
+        self.cli_check('rm', container)
 
     def list_containers(self, needle=''):
+        """List running containers.
+
+        Note: When specifying a needle, 'docker ps' is invoked without the
+              '-q' flag in order to be able to match on container names.
+              Any string in 'docker ps' output that contains the needle is
+              then returned and may as such not actually be a real container
+              id or name.
+
+        Args:
+          needle: keyword to filter docker ps output on.
+
+        Returns:
+          A list of container id's and/or names.
+
+        Example:
+          list_containers()
+          list_containers('deadbeef-namespace')
+
+        """
         if not needle:
             return self.cli_check('ps', '-q').splitlines()
         else:
