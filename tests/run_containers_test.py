@@ -5,29 +5,10 @@
 import unittest
 import yaml
 from container_agent import run_containers
+from container_agent.run_containers import ConfigException
 
 
 class RunContainersTest(unittest.TestCase):
-
-    def testKnownVersion(self):
-        yaml_code = """
-      version: v1beta1
-      """
-        run_containers.CheckVersion(yaml.load(yaml_code))
-
-    def testNoVersion(self):
-        yaml_code = """
-      not_version: not valid
-      """
-        with self.assertRaises(SystemExit):
-            run_containers.CheckVersion(yaml.load(yaml_code))
-
-    def testUnknownVersion(self):
-        yaml_code = """
-      version: not valid
-      """
-        with self.assertRaises(SystemExit):
-            run_containers.CheckVersion(yaml.load(yaml_code))
 
     def testRfc1035Name(self):
         self.assertFalse(run_containers.IsRfc1035Name('1'))
@@ -61,14 +42,14 @@ class RunContainersTest(unittest.TestCase):
         yaml_code = """
       - notname: notgood
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumes(yaml.load(yaml_code))
 
     def testVolumeInvalidName(self):
         yaml_code = """
       - name: 123abc
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumes(yaml.load(yaml_code))
 
     def testVolumeDupName(self):
@@ -76,7 +57,7 @@ class RunContainersTest(unittest.TestCase):
       - name: abc123
       - name: abc123
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumes(yaml.load(yaml_code))
 
     def testContainerValidMinimal(self):
@@ -90,10 +71,6 @@ class RunContainersTest(unittest.TestCase):
         self.assertEqual(2, len(user))
         self.assertEqual('abc123', user[0].name)
         self.assertEqual('abc124', user[1].name)
-
-        infra = run_containers.LoadInfraContainers(user)
-        self.assertEqual(1, len(infra))
-        self.assertEqual('.net', infra[0].name)
 
     def testContainerValidFull(self):
         yaml_code = """
@@ -177,7 +154,7 @@ class RunContainersTest(unittest.TestCase):
       - notname: notgood
         image: foo/bar
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadUserContainers(yaml.load(yaml_code), [])
 
     def testContainerInvalidName(self):
@@ -185,7 +162,7 @@ class RunContainersTest(unittest.TestCase):
       - name: not_good
         image: foo/bar
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadUserContainers(yaml.load(yaml_code), [])
 
     def testContainerDupName(self):
@@ -195,7 +172,7 @@ class RunContainersTest(unittest.TestCase):
       - name: abc123
         image: foo/bar
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadUserContainers(yaml.load(yaml_code), [])
 
     def testContainerNoImage(self):
@@ -203,7 +180,7 @@ class RunContainersTest(unittest.TestCase):
       - name: abc123
         notimage: foo/bar
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadUserContainers(yaml.load(yaml_code), [])
 
     def testContainerWithoutCommand(self):
@@ -251,7 +228,7 @@ class RunContainersTest(unittest.TestCase):
         image: foo/bar
         workingDir: foo/bar
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadUserContainers(yaml.load(yaml_code), [])
 
     def testContainerWithoutPorts(self):
@@ -286,7 +263,7 @@ class RunContainersTest(unittest.TestCase):
       - name: 123abc
         containerPort: 123
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortDupName(self):
@@ -296,28 +273,28 @@ class RunContainersTest(unittest.TestCase):
       - name: abc123
         containerPort: 124
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortNoContainerPort(self):
         yaml_code = """
       - name: abc123
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortTooLowContainerPort(self):
         yaml_code = """
       - containerPort: 0
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortTooHighContainerPort(self):
         yaml_code = """
       - containerPort: 65536
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortWithHostPort(self):
@@ -334,7 +311,7 @@ class RunContainersTest(unittest.TestCase):
       - containerPort: 123
         hostPort: 0
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortTooHighHostPort(self):
@@ -342,7 +319,7 @@ class RunContainersTest(unittest.TestCase):
       - containerPort: 123
         hostPort: 65536
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortDupHostPort(self):
@@ -352,7 +329,7 @@ class RunContainersTest(unittest.TestCase):
       - containerPort: 124
         hostPort: 123
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testPortWithProtocolTcp(self):
@@ -378,7 +355,7 @@ class RunContainersTest(unittest.TestCase):
       - containerPort: 123
         protocol: IGMP
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
     def testContainerWithoutMounts(self):
@@ -406,7 +383,7 @@ class RunContainersTest(unittest.TestCase):
         yaml_code = """
       - path: /mnt/vol1
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumeMounts(
                 yaml.load(yaml_code), ['vol1'], 'ctr_name')
 
@@ -415,7 +392,7 @@ class RunContainersTest(unittest.TestCase):
       - name: 1vol
         path: /mnt/vol1
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumeMounts(
                 yaml.load(yaml_code), ['1vol'], 'ctr_name')
 
@@ -424,7 +401,7 @@ class RunContainersTest(unittest.TestCase):
       - name: vol1
         path: /mnt/vol1
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumeMounts(
                 yaml.load(yaml_code), [], 'ctr_name')
 
@@ -432,7 +409,7 @@ class RunContainersTest(unittest.TestCase):
         yaml_code = """
       - name: vol1
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumeMounts(
                 yaml.load(yaml_code), ['vol1'], 'ctr_name')
 
@@ -441,7 +418,7 @@ class RunContainersTest(unittest.TestCase):
       - name: vol1
         path: mnt/vol1
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadVolumeMounts(
                 yaml.load(yaml_code), ['vol1'], 'ctr_name')
 
@@ -469,7 +446,7 @@ class RunContainersTest(unittest.TestCase):
         yaml_code = """
       - value: value
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadEnvVars(yaml.load(yaml_code), 'ctr_name')
 
     def testEnvInvalidKey(self):
@@ -477,14 +454,14 @@ class RunContainersTest(unittest.TestCase):
       - key: 1value
         value: value
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadEnvVars(yaml.load(yaml_code), 'ctr_name')
 
     def testEnvNoValue(self):
         yaml_code = """
       - key: key
       """
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.LoadEnvVars(yaml.load(yaml_code), 'ctr_name')
 
     def testFlagList(self):
@@ -520,19 +497,7 @@ class RunContainersTest(unittest.TestCase):
         c.ports = [(80, 81, '')]
         containers.append(c)
 
-        with self.assertRaises(SystemExit):
-            run_containers.CheckGroupWideConflicts(containers)
-
-    def testCheckGroupWideConflictsDupContainerPort(self):
-        containers = []
-        c = run_containers.Container('name1', 'ubuntu')
-        c.ports = [(80, 80, '')]
-        containers.append(c)
-        c = run_containers.Container('name1', 'ubuntu')
-        c.ports = [(81, 80, '')]
-        containers.append(c)
-
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigException):
             run_containers.CheckGroupWideConflicts(containers)
 
 
