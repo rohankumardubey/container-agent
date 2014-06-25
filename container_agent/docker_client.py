@@ -188,7 +188,8 @@ class CliDockerClient(object):
         Example:
           run(image='busybox',
               command=['nc', '-p', '4711', '-lle', 'cat'],
-              ports=[(4711, 4711, tcp)],
+              ports=[(7, 4711, tcp),
+                     ('1.2.3.4', 7, 4711, tcp)],
               name='netcat-echo')
 
         """
@@ -308,7 +309,8 @@ class CliDockerClient(object):
                       needle, matches)
             return matches
 
-    def __port_arg(self, internal, external, proto):
-        es = external and ':%d' % (external, ) or ''
+    def __port_arg(self, ip, external, internal, proto):
+        ips = ip and '%s:' % (ip, ) or ''
+        es = external and '%d:' % (external, ) or ''
         ps = proto and '/%s' % (proto, ) or ''
-        return '-p=%d%s%s' % (internal, es, ps)
+        return '-p=%s%s%d%s' % (ips, es, internal, ps)

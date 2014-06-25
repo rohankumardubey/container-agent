@@ -44,6 +44,7 @@ from glob import glob
 from hashlib import sha1
 from logging import WARNING, DEBUG
 from logging.handlers import SysLogHandler, SYSLOG_UDP_PORT
+from IPy import IP
 
 from docker_client import CliDockerClient
 
@@ -68,13 +69,22 @@ class ConfigException(Exception):
     pass
 
 
+def IsValidIpv4Address(address):
+    try:
+        IP(address)
+    except ValueError:
+        return False
+    else:
+        return True
+
+
 def IsValidProtocol(proto):
     return proto in VALID_PROTOCOLS
 
 
 def ProtocolString(proto):
     if proto == PROTOCOL_UDP:
-        return '/udp'
+        return 'udp'
     return ''
 
 
@@ -199,7 +209,7 @@ def LoadPorts(ports_spec, ctr_name):
     # TODO(thockin): could be a dict of name -> Port
     all_ports = []
     all_port_names = []
-    all_host_port_nums = []
+    all_host_port_mappings = set()
 
     for port_index, port_spec in enumerate(ports_spec):
         if 'name' in port_spec:
@@ -226,16 +236,17 @@ def LoadPorts(ports_spec, ctr_name):
                 'containers[%s].ports[%s].containerPort is invalid: %d'
                 % (ctr_name, port_name, ctr_port))
 
+        host_ip = port_spec.get('hostIp', '')
+        if host_ip and not IsValidIpv4Address(host_ip):
+            raise ConfigException(
+                'containers[%s].ports[%s].hostIp is invalid: %s'
+                % (ctr_name, port_name, host_ip))
+
         host_port = port_spec.get('hostPort', ctr_port)
         if not IsValidPort(host_port):
             raise ConfigException(
                 'containers[%s].ports[%s].hostPort is invalid: %d'
                 % (ctr_name, port_name, host_port))
-        if host_port in all_host_port_nums:
-            raise ConfigException(
-                'containers[%s].ports[%s].hostPort is not unique: %d'
-                % (ctr_name, port_name, host_port))
-        all_host_port_nums.append(host_port)
 
         proto = port_spec.get('protocol', 'TCP')
         if not IsValidProtocol(proto):
@@ -243,7 +254,15 @@ def LoadPorts(ports_spec, ctr_name):
                 'containers[%s].ports[%s].protocol is invalid: %s'
                 % (ctr_name, port_name, proto))
 
-        all_ports.append((host_port, ctr_port, ProtocolString(proto)))
+        host_port_mapping = (host_ip, host_port, proto)
+        if host_port_mapping in all_host_port_mappings:
+            raise ConfigException(
+                'containers[%s].ports[%s].(hostIp,hostPort,protocol) \
+                is not unique: %s %d %s'
+                % (ctr_name, port_name, host_ip, host_port, proto))
+        all_host_port_mappings.add(host_port_mapping)
+
+        all_ports.append((host_ip, host_port, ctr_port, ProtocolString(proto)))
 
     return all_ports
 
@@ -314,14 +333,14 @@ def LoadEnvVars(env_spec, ctr_name):
 
 def CheckGroupWideConflicts(containers):
     # TODO(thockin): we could put other uniqueness checks (e.g. name) here.
-    # Make sure not two containers have conflicting host or container ports.
+    # Make sure not two containers have conflicting host ports.
     host_ports = set()
     for ctr in containers:
-        for port in ctr.ports:
-            h = '%s%s' % (port[0], port[2])
+        for host_ip, host_port, container_port, protocol in ctr.ports:
+            h = (host_ip, host_port, protocol)
             if h in host_ports:
                 raise ConfigException(
-                    'host port %s is not unique group-wide' % (h))
+                    'host port %s is not unique group-wide' % (h, ))
             host_ports.add(h)
 
 
