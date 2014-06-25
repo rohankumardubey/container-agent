@@ -82,6 +82,7 @@ class RunContainersTest(unittest.TestCase):
         workingDir: /tmp
         ports:
           - name: port1
+            hostIp: 10.20.30.40
             hostPort: 111
             containerPort: 2222
             protocol: UDP
@@ -99,7 +100,7 @@ class RunContainersTest(unittest.TestCase):
         self.assertEqual('foo/bar', x[0].image)
         self.assertEqual(['one', 'two'], x[0].command)
         self.assertEqual('/tmp', x[0].working_dir)
-        self.assertEqual((111, 2222, '/udp'), x[0].ports[0])
+        self.assertEqual(('10.20.30.40', 111, 2222, 'udp'), x[0].ports[0])
         self.assertEqual('/export/vol1:/mnt:ro', x[0].mounts[0])
         self.assertEqual('KEY=value str', x[0].env_vars[0])
 
@@ -118,6 +119,7 @@ class RunContainersTest(unittest.TestCase):
           "ports": [
             {
               "name": "port1",
+              "hostIp": "10.20.30.40",
               "hostPort": 111,
               "containerPort": 2222,
               "protocol": "UDP"
@@ -145,7 +147,7 @@ class RunContainersTest(unittest.TestCase):
         self.assertEqual('foo/bar', x[0].image)
         self.assertEqual(['one', 'two'], x[0].command)
         self.assertEqual('/tmp', x[0].working_dir)
-        self.assertEqual((111, 2222, '/udp'), x[0].ports[0])
+        self.assertEqual(('10.20.30.40', 111, 2222, 'udp'), x[0].ports[0])
         self.assertEqual('/export/vol1:/mnt:ro', x[0].mounts[0])
         self.assertEqual('KEY=value str', x[0].env_vars[0])
 
@@ -246,8 +248,8 @@ class RunContainersTest(unittest.TestCase):
       """
         x = run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
         self.assertEqual(2, len(x))
-        self.assertEqual((1, 1, ''), x[0])
-        self.assertEqual((65535, 65535, ''), x[1])
+        self.assertEqual(('', 1, 1, ''), x[0])
+        self.assertEqual(('', 65535, 65535, ''), x[1])
 
     def testPortWithName(self):
         yaml_code = """
@@ -256,7 +258,7 @@ class RunContainersTest(unittest.TestCase):
       """
         x = run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
         self.assertEqual(1, len(x))
-        self.assertEqual((123, 123, ''), x[0])
+        self.assertEqual(('', 123, 123, ''), x[0])
 
     def testPortInvalidName(self):
         yaml_code = """
@@ -297,6 +299,15 @@ class RunContainersTest(unittest.TestCase):
         with self.assertRaises(ConfigException):
             run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
 
+    def testPortWithHostIp(self):
+        yaml_code = """
+      - containerPort: 123
+        hostIp: 10.20.30.40
+      """
+        x = run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
+        self.assertEqual(1, len(x))
+        self.assertEqual(('10.20.30.40', 123, 123, ''), x[0])
+
     def testPortWithHostPort(self):
         yaml_code = """
       - containerPort: 123
@@ -304,7 +315,7 @@ class RunContainersTest(unittest.TestCase):
       """
         x = run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
         self.assertEqual(1, len(x))
-        self.assertEqual((456, 123, ''), x[0])
+        self.assertEqual(('', 456, 123, ''), x[0])
 
     def testPortTooLowHostPort(self):
         yaml_code = """
@@ -339,7 +350,7 @@ class RunContainersTest(unittest.TestCase):
       """
         x = run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
         self.assertEqual(1, len(x))
-        self.assertEqual((123, 123, ''), x[0])
+        self.assertEqual(('', 123, 123, ''), x[0])
 
     def testPortWithProtocolUdp(self):
         yaml_code = """
@@ -348,7 +359,7 @@ class RunContainersTest(unittest.TestCase):
       """
         x = run_containers.LoadPorts(yaml.load(yaml_code), 'ctr_name')
         self.assertEqual(1, len(x))
-        self.assertEqual((123, 123, '/udp'), x[0])
+        self.assertEqual(('', 123, 123, 'udp'), x[0])
 
     def testPortWithInvalidProtocol(self):
         yaml_code = """
@@ -477,13 +488,13 @@ class RunContainersTest(unittest.TestCase):
     def testCheckGroupWideConflictsOk(self):
         containers = []
         c = run_containers.Container('name1', 'ubuntu')
-        c.ports = [(80, 80, '')]
+        c.ports = [('', 80, 80, '')]
         containers.append(c)
         c = run_containers.Container('name1', 'ubuntu')
-        c.ports = [(81, 81, '')]
+        c.ports = [('', 81, 81, '')]
         containers.append(c)
         c = run_containers.Container('name2', 'ubuntu')
-        c.ports = [(81, 81, '/udp')]
+        c.ports = [('', 81, 81, 'udp')]
         containers.append(c)
 
         run_containers.CheckGroupWideConflicts(containers)
@@ -491,10 +502,10 @@ class RunContainersTest(unittest.TestCase):
     def testCheckGroupWideConflictsDupHostPort(self):
         containers = []
         c = run_containers.Container('name1', 'ubuntu')
-        c.ports = [(80, 80, '')]
+        c.ports = [('', 80, 80, '')]
         containers.append(c)
         c = run_containers.Container('name1', 'ubuntu')
-        c.ports = [(80, 81, '')]
+        c.ports = [('', 80, 81, '')]
         containers.append(c)
 
         with self.assertRaises(ConfigException):

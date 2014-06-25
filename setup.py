@@ -5,6 +5,7 @@ setup(
   version = '0.0.1',
   license = 'Apache 2.0',
   install_requires = [
+    'ipy==0.81',
     'pyyaml',
   ],
   packages = ['container_agent'],
